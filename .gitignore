@@ -1,0 +1,27 @@
+__pycache__/
+*.db
+node_modules/
+dist/
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Dependencies and builds
+node_modules/
+dist/
+__pycache__/
+*.pyc
+
+# Local data and uploaded photos
+uploads/
+photos/
+*.sqlite3
+*.db
+
+# Local backups
+*.bak
+*.backup
