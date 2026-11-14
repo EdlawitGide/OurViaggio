@@ -32,7 +32,7 @@
 
 I love traveling.
 
-Exploring unfamiliar cities, discovering hidden cafés, trying new food, and making memories with friends are some of my favorite things.
+Exploring unfamiliar cities, discovering hidden MATCHA cafés, trying new food, and making memories with friends and family are some of my favorite things.
 
 But planning those adventures with a group?
 
