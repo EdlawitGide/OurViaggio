@@ -453,6 +453,7 @@ Open the URL provided by Vite, typically:
 ---
 ## 🎬 Product Demo
 
-See OurViaggio in action!
 
-[▶️ Watch the Demo](./OurViaggio_GitHub_Demo.mp4)
+https://github.com/user-attachments/assets/b2363c89-fb6f-4bb2-9ce5-47cc187c2615
+
+
