@@ -451,3 +451,8 @@ Open the URL provided by Vite, typically:
 - Backend authorization should be fully hardened before public deployment.
 
 ---
+## 🎬 Product Demo
+
+See OurViaggio in action!
+
+[▶️ Watch the Demo](./OurViaggio_GitHub_Demo.mp4)
