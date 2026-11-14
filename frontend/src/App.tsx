@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, FormEvent } from "react";
 import { api, setTok, tok } from "./api";
 import TripPhotos from "./TripPhotos";
 import ExploreMap from "./ExploreMap";
+import { supabase } from "./supabase";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type S = any;
@@ -11,7 +12,92 @@ const fd = (e: FormEvent) => { e.preventDefault(); return new FormData(e.current
 export default function App() {
   const [h, setH] = useState(location.hash);
   useEffect(() => { const f = () => setH(location.hash); addEventListener("hashchange", f); return () => removeEventListener("hashchange", f); }, []);
-  return h.startsWith("#/t/") ? <Trip code={h.slice(4)} /> : <Home />;
+  return h.startsWith("#/t/") ? <TripAccess code={h.slice(4)} /> : <Home />;
+}
+
+
+async function accountRequest(path: string, options: RequestInit = {}) {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+
+  if (!token) throw new Error("Please log in again");
+
+  const response = await fetch("/api" + path, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+      Authorization: "Bearer " + token,
+    },
+  });
+
+  const result = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(result.detail || "Account request failed");
+  }
+
+  return result;
+}
+
+async function claimMembership(code: string) {
+  const token = tok(code);
+  if (!token) throw new Error("Trip membership token missing");
+
+  return accountRequest("/trips/" + code + "/claim", {
+    method: "POST",
+    headers: { "X-Token": token },
+  });
+}
+
+function TripAccess({ code }: { code: string }) {
+  const [ready, setReady] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    setReady(false);
+    setError("");
+
+    (async () => {
+      try {
+        const membership = await accountRequest(
+          "/trips/" + code + "/membership"
+        );
+
+        if (active && membership.token) {
+          setTok(code, membership.token);
+        }
+      } catch (e) {
+        // A 404 means this account has not linked this trip yet.
+        // Keep an existing local membership for explicit claiming.
+        if (e instanceof Error &&
+            !e.message.includes("No active membership") &&
+            active) {
+          setError(e.message);
+        }
+      } finally {
+        if (active) setReady(true);
+      }
+    })();
+
+    return () => { active = false; };
+  }, [code]);
+
+  if (!ready) {
+    return <main className="home"><p>Opening your trip...</p></main>;
+  }
+
+  if (error) {
+    return (
+      <main className="home">
+        <p className="err">{error}</p>
+        <button onClick={() => location.reload()}>Try again</button>
+      </main>
+    );
+  }
+
+  return <Trip code={code} />;
 }
 
 function Home() {
@@ -20,7 +106,7 @@ function Home() {
     const d = fd(e);
     try {
       const r = await api<any>("/trips", undefined, { method: "POST", body: JSON.stringify({ name: d.get("name"), dest: d.get("dest"), start: d.get("start"), days: +(d.get("days") || 3), creator: `${d.get("firstName") || ""} ${d.get("lastName") || ""}`.trim() }) });
-      setTok(r.code, r.token); location.hash = "#/t/" + r.code;
+      setTok(r.code, r.token); await claimMembership(r.code); location.hash = "#/t/" + r.code;
     } catch (x: any) { setErr(x.message); }
   };
   return (
@@ -52,10 +138,10 @@ function Trip({ code }: { code: string }) {
   };
   if (err && !s) return <main className="home"><p className="err">{err}</p><a href="#/">Back home</a></main>;
   if (!s) return <main className="home"><p className="sub">Loading trip…</p></main>;
-  const nameOf = (id: number) => (id === s.me ? "You" : s.members.find((m: S) => m.id === id)?.name || "Someone");
+  const nameOf = (id: number) => (id === s.me ? "You" : (s.members.concat(s.former_members || [])).find((m: S) => m.id === id)?.name || "Someone");
   if (s.me == null) return (
     <main className="home"><h1>{s.trip.name}</h1><p className="sub">{s.members.length} friends are in. Add your name to join.</p>
-      <form className="card" onSubmit={async (e) => { const d = fd(e); const r = await api<any>("/trips/" + code + "/join", code, { method: "POST", body: JSON.stringify({ name: `${d.get("firstName") || ""} ${d.get("lastName") || ""}`.trim() }) }); setTok(code, r.token); load(); }}>
+      <form className="card" onSubmit={async (e) => { const d = fd(e); const r = await api<any>("/trips/" + code + "/join", code, { method: "POST", body: JSON.stringify({ name: `${d.get("firstName") || ""} ${d.get("lastName") || ""}`.trim() }) }); setTok(code, r.token); await claimMembership(code); load(); }}>
         <div className="two"><label>First name<input name="firstName" required maxLength={40} /></label><label>Last name<input name="lastName" required maxLength={40} /></label></div><button className="pri">Join workspace</button></form></main>
   );
   const spent = s.expenses.reduce((a: number, e: S) => a + e.amount, 0);
@@ -71,7 +157,7 @@ function Trip({ code }: { code: string }) {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <a className="brand" href="#/"><span className="brand-icon">✈</span> Gather<span>Route</span></a>
+        <a className="brand" href="#/"><img className="brand-logo" src="/ourviaggio-icon.png" alt="OurViaggio logo" /><span className="brand-name">OurViaggio</span></a>
         <a href="#/" className="new-trip">New trip <span>＋</span></a>
         <div className="nav-heading">WORKSPACE</div>
         {navItems.map(([key,icon,label])=><button className={'side-item '+(tab===key?'active':'')} key={key} onClick={()=>setTab(key)}><span className="side-icon">{icon}</span>{label}</button>)}
@@ -79,12 +165,57 @@ function Trip({ code }: { code: string }) {
       </aside>
       <div className="workspace">
         <header className="topbar"><div className="breadcrumbs"><span>My trips</span><span className="crumb-sep">/</span><strong>{s.trip.name}</strong><span className="crumb-down">⌄</span></div><div className="header-actions"><span className="header-status">● &nbsp; Shared workspace</span><button className="top-icon" title="Copy invitation link" onClick={()=>{navigator.clipboard.writeText(location.href);setErr('Invite link copied!')}}>↗</button><span className="mini-avatar">{(s.members.find((m:S)=>m.id===s.me)?.name||"Y").slice(0,1).toUpperCase()}</span></div></header>
+        {s.me != null && !s.linked_account && (
+          <div className="notice">
+            <span>
+              Have an existing membership? Link it to your
+              OurViaggio account to access this trip anywhere.
+            </span>
+            <button
+              onClick={async () => {
+                try {
+                  await claimMembership(code);
+                  await load();
+                  setErr("Membership linked to your account!");
+                } catch (e: any) {
+                  setErr(e.message);
+                }
+              }}
+            >
+              Link my membership
+            </button>
+          </div>
+        )}
         {err && <div className="notice" role="status">{err}<button onClick={()=>setErr('')} aria-label="Dismiss">×</button></div>}
         {tab==='plan' ? <div className="dashboard-grid">
           <main className="dashboard-main">
             <div className="intro-row"><div><p className="eyebrow">YOUR NEXT ADVENTURE</p><h1>Trip overview <span className="sparkle">✳</span></h1><p className="sub">Everything your crew needs, all in one place.</p></div><button className="outline-action" onClick={()=>{navigator.clipboard.writeText(location.href);setErr('Invite link copied!')}}>↗ &nbsp; Invite friends</button></div>
             <section className="destination-banner"><div className="destination-copy"><span className="banner-kicker">UPCOMING TRIP</span><h2>{s.trip.dest || s.trip.name}</h2><p>{s.trip.name}</p><div className="banner-pill">✈ &nbsp; {s.trip.days} amazing days ahead</div></div><div className="destination-art" aria-hidden="true"><div className="sun-disc"></div><div className="colosseum"><div className="arch-row">{Array.from({length:5},(_,i)=><i key={i}/>)}</div><div className="arch-row">{Array.from({length:5},(_,i)=><i key={i}/>)}</div><div className="arch-row">{Array.from({length:5},(_,i)=><i key={i}/>)}</div></div></div></section>
-            <div className="summary-row"><section className="summary-card"><span className="tile-icon orange">▦</span><p>Travel date</p><h3>{s.trip.days} days</h3><small>{prettyDate(1)} <span className="exchange">⇄</span> {prettyDate(s.trip.days)}</small></section><section className="summary-card"><span className="tile-icon violet">♧</span><p>Travel crew</p><h3>{s.members.length} <span className="normal-weight">people</span></h3><div className="crew-list">{s.members.slice(0,4).map((m:S,i:number)=><span key={m.id} className={'crew-avatar crew-'+(i%4)} title={m.name}>{m.name.charAt(0).toUpperCase()}</span>)}<button title="Copy invite link" onClick={()=>{navigator.clipboard.writeText(location.href);setErr('Invite link copied!')}}>+</button></div></section><section className="summary-card"><span className="tile-icon blue">♧</span><p>Destination</p><h3>{s.trip.dest || 'Anywhere'}</h3><small>✦ &nbsp; Let's make memories</small></section></div>
+            <div className="summary-row"><TravelDateCard
+  start={s.trip.start}
+  days={s.trip.days}
+  maxActivityDay={Math.max(0, ...s.activities.map((a:S) => a.day))}
+  onSave={(start, days) => call('/dates', 'PATCH', {start, days})}
+/><CrewCard
+  members={s.members}
+  me={s.me}
+  isOrganizer={s.is_organizer}
+  onRemove={async (id: number) => {
+    try {
+      await api("/trips/" + code + "/members/" + id, code, {
+        method: "DELETE"
+      });
+      await load();
+    } catch (e: any) {
+      setErr(e.message);
+      throw e;
+    }
+  }}
+  onInvite={() => {
+    navigator.clipboard.writeText(location.href);
+    setErr("Invite link copied!");
+  }}
+/><section className="summary-card"><span className="tile-icon blue">♧</span><p>Destination</p><h3>{s.trip.dest || 'Anywhere'}</h3><small>✦ &nbsp; Let's make memories</small></section></div>
             <div className="section-title-row"><div><p className="eyebrow">STAY ON TRACK</p><h2>Trip itinerary</h2></div><button className="outline-action" onClick={()=>setShowActivity(!showActivity)}>{showActivity?'Close':'＋ Add activity'}</button></div>
             {showActivity && <form className="card activity-form" onSubmit={(e)=>{const d=fd(e);call('/activities','POST',{title:d.get('title'),day:+(d.get('day') as string),time:d.get('time'),loc:d.get('loc')});(e.target as HTMLFormElement).reset();setShowActivity(false);}}><label>Activity<input name="title" required placeholder="Colosseum tour"/></label><div className="two"><label>Day<select name="day" defaultValue={selectedDay}>{days.map((d)=><option key={d} value={d}>{dayLabel(d)}</option>)}</select></label><label>Time<input type="time" name="time"/></label></div><label>Location<input name="loc" placeholder="Add a place (optional)"/></label><button className="pri">Save activity</button></form>}
             <div className="day-selector">{days.map((d)=><button key={d} onClick={()=>setSelectedDay(d)} className={selectedDay===d?'selected':''}><span>DAY {d}</span><strong>{prettyDate(d)}</strong></button>)}</div>
@@ -94,6 +225,344 @@ function Trip({ code }: { code: string }) {
         </div> : <div className="interior-page"><div className="intro-row"><div><p className="eyebrow">{s.trip.name.toUpperCase()}</p><h1>{tab==='polls'?'Group voting':tab==='money'?'Trip expenses':tab==='photos'?'Trip photos':tab==='map'?'Explore Map':'AI trip ideas'}</h1><p className="sub">{tab==='polls'?'Let everyone have a say.':tab==='money'?'Track spending and settle up effortlessly.':tab==='photos'?'Upload and download your favorite moments together.':tab==='map'?'Find hotels, restaurants, and attractions nearby.':'Find something amazing for your next adventure.'}</p></div><button className="outline-action" onClick={()=>setTab('plan')}>← Overview</button></div><div className="interior-content">{tab==='polls'&&<PollTab s={s} call={call} dayLabel={dayLabel} days={days}/>}{tab==='money'&&<MoneyTab s={s} call={call} nameOf={nameOf}/>}{tab==='photos'&&<TripPhotos code={code} members={s.members} />}{tab==='ai'&&<AiTab code={code} days={days} dayLabel={dayLabel} call={call}/>}{tab==='map'&&<ExploreMap destination={s.trip.dest || s.trip.name} code={code} days={days} dayLabel={dayLabel} reload={load}/>}</div></div>}
       </div>
     </div>
+  );
+}
+
+
+
+function TravelDateCard({
+  start,
+  days,
+  maxActivityDay,
+  onSave,
+}: {
+  start: string;
+  days: number;
+  maxActivityDay: number;
+  onSave: (start: string, days: number) => Promise<unknown> | void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [begin, setBegin] = useState(start);
+  const [end, setEnd] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const addDays = (value: string, n: number) => {
+    const d = new Date(value + "T12:00:00Z");
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+
+  const duration = begin && end
+    ? Math.round(
+        (Date.parse(end + "T12:00:00Z") -
+         Date.parse(begin + "T12:00:00Z")) / 86400000
+      ) + 1
+    : 0;
+
+  const valid = duration >= 1 && duration <= 30;
+  const conflicts = valid && maxActivityDay > duration;
+
+  const label = (value: string) => value
+    ? new Date(value + "T12:00:00Z").toLocaleDateString(
+        undefined, {month: "short", day: "numeric"}
+      )
+    : "Not set";
+
+  const openEditor = () => {
+    const initial = start || new Date().toLocaleDateString("en-CA");
+    setBegin(initial);
+    setEnd(addDays(initial, days - 1));
+    setError("");
+    setOpen(true);
+  };
+
+  const save = async () => {
+    if (!valid || conflicts || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(begin, duration);
+      setOpen(false);
+    } catch {
+      setError("Could not save dates. Please try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <section
+        className="summary-card travel-date-clickable"
+        role="button"
+        tabIndex={0}
+        aria-label="Edit travel dates"
+        onClick={openEditor}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openEditor();
+          }
+        }}
+      >
+        <span className="tile-icon orange">▦</span>
+        <p>Travel date</p>
+        <h3>{days} days</h3>
+        <small>
+          {start ? label(start) : "Choose date"}
+          <span className="exchange"> ⇄ </span>
+          {start ? label(addDays(start, days - 1)) : "Choose date"}
+        </small>
+      </section>
+
+      {open && (
+        <div
+          className="crew-modal-backdrop"
+          onClick={() => setOpen(false)}
+        >
+          <div
+            className="crew-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Edit trip dates"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="crew-modal-header">
+              <div>
+                <h2>Edit trip dates ✈️</h2>
+                <p>Adjust your adventure schedule</p>
+              </div>
+              <button
+                className="crew-close"
+                aria-label="Close"
+                onClick={() => setOpen(false)}
+              >×</button>
+            </div>
+
+            <div className="trip-date-fields">
+              <label>
+                Start date
+                <input
+                  type="date"
+                  value={begin}
+                  onChange={(e) => setBegin(e.target.value)}
+                />
+              </label>
+              <label>
+                End date
+                <input
+                  type="date"
+                  value={end}
+                  min={begin}
+                  onChange={(e) => setEnd(e.target.value)}
+                />
+              </label>
+            </div>
+
+            <div className="trip-duration-preview">
+              <strong>{valid ? duration + " days" : "Invalid dates"}</strong>
+              <small>Updated trip duration</small>
+            </div>
+
+            {conflicts && (
+              <p className="trip-date-warning">
+                Your itinerary contains activities through Day {maxActivityDay}.
+                Move those activities before shortening the trip.
+              </p>
+            )}
+
+            {!valid && (
+              <p className="trip-date-warning">
+                Choose a trip duration between 1 and 30 days.
+              </p>
+            )}
+
+            {error && <p className="trip-date-warning">{error}</p>}
+
+            <button
+              className="crew-invite-action"
+              disabled={!valid || conflicts || saving}
+              onClick={save}
+            >
+              {saving ? "Saving..." : "Save changes"}
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function CrewCard({
+  members,
+  me,
+  isOrganizer,
+  onRemove,
+  onInvite,
+}: {
+  members: { id: number; name: string }[];
+  me: number | null;
+  isOrganizer: boolean;
+  onRemove: (id: number) => Promise<void>;
+  onInvite: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [removing, setRemoving] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [removeError, setRemoveError] = useState("");
+
+  return (
+    <>
+      <section
+        className="summary-card crew-clickable"
+        role="button"
+        tabIndex={0}
+        aria-label="View travel crew"
+        onClick={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setOpen(true);
+          }
+        }}
+      >
+        <span className="tile-icon violet">♧</span>
+        <p>Travel crew</p>
+        <h3>
+          {members.length} <span className="normal-weight">people</span>
+        </h3>
+        <div className="crew-list">
+          {members.slice(0, 4).map((m, i) => (
+            <span
+              key={m.id}
+              className={"crew-avatar crew-" + (i % 4)}
+              title={m.name}
+            >
+              {m.name.charAt(0).toUpperCase()}
+            </span>
+          ))}
+          <button
+            title="Copy invite link"
+            onClick={(e) => {
+              e.stopPropagation();
+              onInvite();
+            }}
+          >
+            +
+          </button>
+        </div>
+      </section>
+
+      {open && (
+        <div
+          className="crew-modal-backdrop"
+          onClick={() => setOpen(false)}
+        >
+          <div
+            className="crew-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Travel crew"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="crew-modal-header">
+              <div>
+                <h2>Travel crew ✈️</h2>
+                <p>{members.length} people on this trip</p>
+              </div>
+              <button
+                className="crew-close"
+                aria-label="Close"
+                onClick={() => setOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="crew-members">
+              {members.map((m, i) => (
+                <div className="crew-member-profile" key={m.id}>
+                  <div className={"crew-profile-avatar crew-" + (i % 4)}>
+                    {m.name.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="crew-profile-info">
+                    <strong>{m.name}</strong>
+                    <small>
+                      {m.id === me
+                        ? (isOrganizer ? "You · Organizer" : "You · Trip member")
+                        : "Trip member"}
+                    </small>
+                  </div>
+                  {isOrganizer && m.id !== me && (
+                    <button
+                      type="button"
+                      className="crew-remove-button"
+                      onClick={() => {
+                        setRemoveError("");
+                        setRemoving(m.id);
+                      }}
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {removing !== null && (
+              <div className="crew-removal-confirm">
+                <p>
+                  Remove {members.find(m => m.id === removing)?.name}
+                  {" "}from this trip?
+                </p>
+                <small>
+                  Their current access will be revoked.
+                  Historical contributions will be preserved.
+                </small>
+                {removeError && <p role="alert">{removeError}</p>}
+                <div className="crew-confirm-actions">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setRemoving(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        await onRemove(removing);
+                        setRemoving(null);
+                      } catch {
+                        setRemoveError("Unable to remove member.");
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    {busy ? "Removing..." : "Confirm removal"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <button
+              className="crew-invite-action"
+              onClick={() => {
+                onInvite();
+                setOpen(false);
+              }}
+            >
+              + Invite another traveler
+            </button>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

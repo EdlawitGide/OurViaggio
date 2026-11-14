@@ -25,3 +25,40 @@ photos/
 # Local backups
 *.bak
 *.backup
+backend/.env
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+!.env.local.example
+**/.env
+**/.env.local
+
+# Local databases and backups
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Python environment
+.venv/
+__pycache__/
+*.pyc
+
+# Frontend generated files
+node_modules/
+dist/
+
+# Temporary development backups
+*.before-account-link
+*.crew-admin-backup
+*.dates-backup
+*.linked-backup
+*.membership-backup
+*.account-backup
+*.brand-backup
+*.crew-backup
+*.map-backup
+*.maptiler-backup
+*.before-auth

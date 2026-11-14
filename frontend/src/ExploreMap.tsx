@@ -1,131 +1,152 @@
-import { MaptilerLayer, MapStyle, Language } from "@maptiler/leaflet-maptilersdk";
+
 import { FormEvent, useEffect, useRef, useState } from "react";
 import * as L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { api } from "./api";
+import { Category, Dest, Place, geocode, kindLabel, nearby, overpassQuery, zoomFor } from "./geo";
+import { EMOJI, buildPopup } from "./popup";
 
-type Place = { id: string; name: string; lat: number; lon: number; category: string; address: string };
 type Props = { destination: string; code: string; days: number[]; dayLabel: (day: number) => string; reload: () => Promise<unknown> };
+const CATEGORIES: Category[] = ["Hotels", "Restaurants", "Cafés", "Attractions"];
+const SLUG: Record<Category, string> = { Hotels: "hotels", Restaurants: "restaurants", "Cafés": "cafes", Attractions: "attractions" };
+
+const poiIcon = (c: Category) => L.divIcon({ html: `<span><i>${EMOJI[c]}</i></span>`, className: `poi-pin poi-${SLUG[c]}`, iconSize: [34, 34], iconAnchor: [17, 42], popupAnchor: [0, -40] });
 
 export default function ExploreMap({ destination, code, days, dayLabel, reload }: Props) {
   const node = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
-  const layer = useRef<L.LayerGroup | null>(null);
+  const markers = useRef<L.LayerGroup | null>(null);
+  const pin = useRef<L.LayerGroup | null>(null);
+  const pins = useRef<Map<string, L.Marker>>(new Map());
+  const ticket = useRef(0); // ignore responses from searches that were superseded
   const [query, setQuery] = useState(destination);
+  const [candidates, setCandidates] = useState<Dest[]>([]);
+  const [current, setCurrent] = useState<Dest | null>(null);
   const [places, setPlaces] = useState<Place[]>([]);
-  const [selected, setSelected] = useState<Place | null>(null);
-  const [day, setDay] = useState(1);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [category, setCategory] = useState<Category | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+
+  // Popups are built outside React's render, so they read the latest props through a ref instead of a stale closure.
+  const latest = useRef({ code, days, dayLabel, reload, hint: "" });
+  latest.current = { code, days, dayLabel, reload, hint: current?.label.split(",")[0] || "" };
 
   useEffect(() => {
     if (!node.current) return;
     const instance = L.map(node.current).setView([20, 0], 2);
-    new MaptilerLayer({
-      apiKey: import.meta.env.VITE_MAPTILER_KEY,
-      style: MapStyle.STREETS,
-      language: Language.ENGLISH,
-    }).addTo(instance);
-    const markers = L.layerGroup().addTo(instance);
+    let failed = false;
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap contributors"
+    })
+      .on("tileerror", () => {
+        if (!failed) {
+          failed = true;
+          setMessage("Map tiles could not be loaded. Check your connection.");
+        }
+      })
+      .on("tileload", () => {
+        if (failed) {
+          failed = false;
+          setMessage("");
+        }
+      })
+      .addTo(instance);
+
+    console.info("[ExploreMap] tile source: OpenStreetMap");
+    markers.current = L.layerGroup().addTo(instance);
+    pin.current = L.layerGroup().addTo(instance);
     map.current = instance;
-    layer.current = markers;
-    return () => { map.current = null; layer.current = null; instance.remove(); };
+    // Leaflet measures its box once; re-measure whenever the layout settles or resizes, otherwise tiles render grey.
+    const ro = new ResizeObserver(() => instance.invalidateSize());
+    ro.observe(node.current);
+    return () => { ro.disconnect(); map.current = null; markers.current = null; pin.current = null; instance.remove(); };
   }, []);
+
+  function show(d: Dest) {
+    const m = map.current; if (!m) return;
+    setCurrent(d); setPlaces([]); setSelected(null); setCategory(null); setMessage("");
+    markers.current?.clearLayers(); pin.current?.clearLayers(); pins.current.clear();
+    L.marker([d.lat, d.lon], { icon: L.divIcon({ html: "📍", className: "dest-pin", iconSize: [28, 28], iconAnchor: [14, 28] }), keyboard: false }).addTo(pin.current!);
+    m.setView([d.lat, d.lon], zoomFor(d)); // centre on the point itself, not on the middle of a huge boundary box
+  }
 
   async function locate(value: string) {
     if (!value.trim() || !map.current) return;
-    setBusy(true); setMessage(""); setPlaces([]); setSelected(null); layer.current?.clearLayers();
+    const mine = ++ticket.current;
+    setBusy(true); setMessage(""); setCandidates([]);
     try {
-      const r = await fetch("https://nominatim.openstreetmap.org/search?format=json&limit=1&q=" + encodeURIComponent(value));
-      if (!r.ok) throw new Error("Destination lookup unavailable.");
-      const results = await r.json();
-      if (!results.length) throw new Error("Destination not found. Try a city and country.");
-      map.current.setView([Number(results[0].lat), Number(results[0].lon)], 13);
-    } catch (e) { setMessage(e instanceof Error ? e.message : "Search failed."); }
-    finally { setBusy(false); }
+      const found = await geocode(value);
+      if (mine !== ticket.current) return;
+      if (!found.length) { setMessage(`Couldn't find “${value.trim()}”. Try a city and country, like “Lisbon, Portugal”.`); return; }
+      setCandidates(found.length > 1 ? found : []);
+      show(found[0]);
+    } catch (e) { if (mine === ticket.current) setMessage(e instanceof Error ? e.message : "Search failed."); }
+    finally { if (mine === ticket.current) setBusy(false); }
   }
 
-  useEffect(() => { if (destination) void locate(destination); }, [destination]);
+  useEffect(() => { if (destination) void locate(destination); }, [destination]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function nearby(category: "Hotels" | "Restaurants" | "Cafés" | "Attractions") {
-    if (!map.current) return;
-    const { lat, lng } = map.current.getCenter();
-    const tags: Record<string, string> = {
-      Hotels: '["tourism"~"^(hotel|hostel|guest_house|motel)$"]',
-      Restaurants: '["amenity"="restaurant"]',
-      "Cafés": '["amenity"="cafe"]',
-      Attractions: '["tourism"~"^(attraction|museum|gallery|viewpoint)$"]',
-    };
-    const q = `[out:json][timeout:25];nwr(around:3000,${lat},${lng})${tags[category]};out center 80;`;
-    setBusy(true); setMessage(""); setPlaces([]); setSelected(null); layer.current?.clearLayers();
+  async function addToTrip(p: Place, day: number): Promise<boolean> {
+    const { code, dayLabel, reload } = latest.current;
     try {
-      const r = await fetch("https://overpass-api.de/api/interpreter?data=" + encodeURIComponent(q));
-      if (!r.ok) throw new Error("Nearby search is busy. Please try again later.");
-      const data = await r.json();
-      const results: Place[] = (data.elements || []).map((p: any) => ({
-        id: `${p.type}-${p.id}`,
-        name: p.tags?.name || `${category.slice(0, -1)} (unnamed)`,
-        lat: Number(p.lat ?? p.center?.lat),
-        lon: Number(p.lon ?? p.center?.lon),
-        category,
-        address: [p.tags?.["addr:street"], p.tags?.["addr:housenumber"]].filter(Boolean).join(" "),
-      })).filter((p: Place) => Number.isFinite(p.lat) && Number.isFinite(p.lon));
+      await api("/trips/" + code + "/activities", code, { method: "POST", body: JSON.stringify({ title: p.name, loc: p.address || `${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}`, day }) });
+      await reload();
+      setMessage(`Added ${p.name} to ${dayLabel(day)}!`);
+      return true;
+    } catch (e) { setMessage(e instanceof Error ? e.message : "Unable to save activity."); return false; }
+  }
+
+  async function findNearby(c: Category) {
+    const m = map.current; if (!m) return;
+    const mine = ++ticket.current, ctr = m.getCenter(), b = m.getBounds();
+    setBusy(true); setMessage(""); setCategory(c); setPlaces([]); setSelected(null); markers.current?.clearLayers(); pins.current.clear();
+    try {
+      const results = await nearby(c, overpassQuery(c, ctr, (b.getNorth() - b.getSouth()) / 2, (b.getEast() - b.getWest()) / 2), ctr);
+      if (mine !== ticket.current) return;
       setPlaces(results);
       for (const p of results) {
-        const dot = L.circleMarker([p.lat, p.lon], { radius: 7, color: "#254bbd", weight: 2, fillColor: "#ff985c", fillOpacity: .92 }).addTo(layer.current!);
-        const label = document.createElement("span"); label.textContent = p.name;
-        dot.bindPopup(label);
-        dot.on("click", () => setSelected(p));
+        const mk = L.marker([p.lat, p.lon], { icon: poiIcon(c), title: p.name }).addTo(markers.current!);
+        mk.bindPopup(buildPopup({ place: p, hint: latest.current.hint, days: latest.current.days, dayLabel: latest.current.dayLabel, onAdd: addToTrip }), { maxWidth: 320, minWidth: 250 });
+        mk.on("click", () => setSelected(p.id));
+        pins.current.set(p.id, mk);
       }
-      if (!results.length) setMessage("No mapped places found in this area. Try another category or destination.");
-    } catch (e) { setMessage(e instanceof Error ? e.message : "Nearby search failed."); }
-    finally { setBusy(false); }
+      if (results.length) {
+        m.fitBounds(L.latLngBounds(results.map(p => [p.lat, p.lon] as [number, number])), { padding: [50, 50], maxZoom: 16 });
+        setMessage(`Found ${results.length} ${c.toLowerCase()}. Tap a pin for details, hours, website and directions.`);
+      } else setMessage(`No ${c.toLowerCase()} found in this part of the map. Pan or zoom to another area and try again.`);
+    } catch (e) { if (mine === ticket.current) setMessage(e instanceof Error ? e.message : "Nearby search failed."); }
+    finally { if (mine === ticket.current) setBusy(false); }
   }
 
   function choose(p: Place) {
-    setSelected(p);
-    map.current?.setView([p.lat, p.lon], Math.max(map.current.getZoom(), 15));
-  }
-
-  async function save() {
-    if (!selected) return;
-    setBusy(true); setMessage("");
-    try {
-      await api("/trips/" + code + "/activities", code, {
-        method: "POST",
-        body: JSON.stringify({ title: selected.name, loc: selected.address || `${selected.lat.toFixed(5)}, ${selected.lon.toFixed(5)}`, day }),
-      });
-      await reload();
-      setMessage(`Added ${selected.name} to ${dayLabel(day)}!`);
-    } catch (e) { setMessage(e instanceof Error ? e.message : "Unable to save activity."); }
-    finally { setBusy(false); }
+    setSelected(p.id);
+    map.current?.setView([p.lat, p.lon], Math.max(map.current.getZoom(), 16));
+    pins.current.get(p.id)?.openPopup();
   }
 
   return <div className="trip-map-page">
     <form className="map-search" onSubmit={(e: FormEvent) => { e.preventDefault(); void locate(query); }}>
-      <input aria-label="Search destination" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search city or destination" />
+      <input aria-label="Search destination" value={query} onChange={e => setQuery(e.target.value)} placeholder="City, Country (e.g. Rome, Italy)" />
       <button className="pri" disabled={busy}>Search destination</button>
     </form>
+    {current && <p className="sub map-current">📍 Showing <strong>{current.label}</strong></p>}
+    {candidates.length > 1 && <div className="map-candidates" aria-label="Other matches">
+      <small>Not the right place?</small>
+      {candidates.map((c, i) => <button key={i} type="button" className={c === current ? "chosen" : ""} onClick={() => show(c)} title={c.label}>{c.label}</button>)}
+    </div>}
     <div className="map-filters">
-      {(["Hotels", "Restaurants", "Cafés", "Attractions"] as const).map(c =>
-        <button key={c} className="outline-action" type="button" disabled={busy} onClick={() => void nearby(c)}>{c}</button>
-      )}
+      {CATEGORIES.map(c => <button key={c} className={"outline-action" + (category === c ? " active" : "")} type="button" disabled={busy || !current} onClick={() => void findNearby(c)}>
+        {EMOJI[c]} {c}{busy && category === c ? "…" : ""}</button>)}
     </div>
+    <div className="map-status" role="status" aria-live="polite">{busy ? `Searching${category ? " " + category.toLowerCase() : ""}… this can take a few seconds.` : message}</div>
     <div ref={node} className="trip-explore-map" aria-label="Interactive destination map" />
-    {message && <p role="status" className="map-message">{message}</p>}
-    {busy && <p className="sub">Loading places…</p>}
     <div className="map-place-list">
-      {places.map(p => <button key={p.id} className={selected?.id === p.id ? "map-place chosen" : "map-place"} onClick={() => choose(p)}>
-        <strong>{p.name}</strong><small>{p.category}{p.address ? " · " + p.address : ""}</small>
+      {places.map(p => <button key={p.id} className={selected === p.id ? "map-place chosen" : "map-place"} onClick={() => choose(p)}>
+        <strong>{p.name}</strong><small>{kindLabel(p)}{p.address ? " · " + p.address : ""}</small>
       </button>)}
     </div>
-    {selected && <section className="card map-selection">
-      <h3>{selected.name}</h3><p className="sub">{selected.category}{selected.address ? " · " + selected.address : ""}</p>
-      <label>Add to trip day <select value={day} onChange={e => setDay(Number(e.target.value))}>
-        {days.map(d => <option value={d} key={d}>{dayLabel(d)}</option>)}
-      </select></label>
-      <button className="pri" type="button" disabled={busy} onClick={() => void save()}>＋ Add to itinerary</button>
-    </section>}
-    <p className="sub">Places are from OpenStreetMap contributors. Listings may be incomplete; this is not live booking availability.</p>
+    <p className="sub">Search by OpenStreetMap Nominatim; places from OpenStreetMap contributors. Listings may be incomplete and this is not live booking availability.</p>
   </div>;
 }

@@ -69,3 +69,311 @@ body{background:#f8f9fd;color:var(--ink);font-family:Inter,"DM Sans",system-ui,s
 .trip-photo-info { padding:12px; display:grid; gap:3px; }
 .trip-photo-info strong { white-space:nowrap; text-overflow:ellipsis; overflow:hidden; font-size:13px; }
 .trip-photo-info small { color:#64718c; }
+
+/* Explore map additions */
+.dest-pin { font-size: 26px; line-height: 1; background: none; border: none; filter: drop-shadow(0 2px 2px rgba(0,0,0,.35)); }
+.map-current { margin: 0; }
+.map-candidates { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.map-candidates small { color: #68738e; }
+.map-candidates button { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 6px 12px; border: 1px solid #dde3ef; border-radius: 999px; background: #fff; color: #1d2950; cursor: pointer; font: inherit; font-size: .85rem; }
+.map-candidates button.chosen { border-color: #365ed4; background: #eff3ff; }
+.map-filters .outline-action.active { background: #eff3ff; border-color: #365ed4; }
+
+/* Explore map pins + popups */
+.map-status { min-height: 1.4em; color: #2949a3; margin: 0; }
+.poi-pin { background: none; border: none; }
+.poi-pin span { display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); border: 2px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,.4); background: #365ed4; }
+.poi-pin i { transform: rotate(45deg); font-style: normal; font-size: 16px; line-height: 1; }
+.poi-hotels span { background: #7757ef; } .poi-restaurants span { background: #ff7a45; } .poi-cafes span { background: #12b886; } .poi-attractions span { background: #365ed4; }
+.poi-popup { display: grid; gap: 8px; min-width: 230px; color: #1d2950; font-family: inherit; }
+.poi-popup h4 { margin: 0; font-size: 1.05rem; line-height: 1.25; }
+.poi-sub { color: #68738e; font-size: .82rem; margin-top: -4px; }
+.poi-row { display: flex; gap: 8px; font-size: .88rem; line-height: 1.35; }
+.poi-ico { flex: none; width: 1.3em; text-align: center; }
+.leaflet-popup-content .poi-row a { color: #2949a3; word-break: break-all; }
+.poi-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.poi-add { display: flex; gap: 6px; align-items: center; }
+.poi-add select { flex: 1; min-width: 0; padding: 6px; border: 1px solid #dbe0eb; border-radius: 8px; font: inherit; font-size: .85rem; }
+.poi-btn, .leaflet-popup-content a.poi-btn { display: inline-block; padding: 7px 12px; border: 1px solid #dbe0eb; border-radius: 999px; background: #fff; color: #1d2950; font: inherit; font-size: .82rem; font-weight: 600; cursor: pointer; text-decoration: none; }
+.poi-btn.primary, .leaflet-popup-content a.poi-btn.primary { background: #365ed4; border-color: #365ed4; color: #fff; }
+.poi-btn:disabled { opacity: .65; cursor: default; }
+
+
+/* OurViaggio branding */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px 30px;
+  text-decoration: none;
+}
+
+.brand-logo {
+  width: 43px;
+  height: 43px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.brand-name {
+  color: #d98eaa;
+  font-size: 25px;
+  font-weight: 850;
+  letter-spacing: -1px;
+  margin-left: 0;
+}
+
+.brand > span:last-child {
+  color: #d98eaa;
+  margin-left: 0;
+}
+
+
+/* OurViaggio Travel Crew */
+.crew-clickable {
+  cursor: pointer;
+  transition: transform .2s ease, box-shadow .2s ease;
+}
+
+.crew-clickable:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 30px rgba(70, 50, 100, .10);
+}
+
+.crew-clickable:focus-visible {
+  outline: 3px solid #d98eaa;
+  outline-offset: 3px;
+}
+
+.crew-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(27, 25, 45, .48);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.crew-modal {
+  width: 100%;
+  max-width: 440px;
+  max-height: 85vh;
+  overflow-y: auto;
+  background: white;
+  border-radius: 24px;
+  padding: 28px;
+  box-shadow: 0 24px 80px rgba(0,0,0,.16);
+}
+
+.crew-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+}
+
+.crew-modal-header h2 {
+  font-size: 25px;
+  margin: 0 0 6px;
+  color: #252838;
+}
+
+.crew-modal-header p {
+  color: #8c91a7;
+  margin: 0;
+}
+
+.crew-close {
+  background: #f6f3fa;
+  border: none;
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+  font-size: 24px;
+}
+
+.crew-members {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.crew-member-profile {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid #eeeaf5;
+  border-radius: 16px;
+}
+
+.crew-profile-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.crew-profile-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.crew-profile-info strong {
+  color: #252838;
+}
+
+.crew-profile-info small {
+  color: #9498aa;
+}
+
+.crew-invite-action {
+  width: 100%;
+  margin-top: 24px;
+  padding: 14px;
+  border: none;
+  border-radius: 12px;
+  background: #f7e8f0;
+  color: #b65b85;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.crew-invite-action:hover {
+  background: #f1d9e6;
+}
+
+
+/* Interactive trip date editor */
+.travel-date-clickable {
+  cursor: pointer;
+  transition: transform .2s ease, box-shadow .2s ease;
+}
+.travel-date-clickable:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 30px rgba(70,50,100,.10);
+}
+.travel-date-clickable:focus-visible {
+  outline: 3px solid #d98eaa;
+  outline-offset: 3px;
+}
+.trip-date-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+.trip-date-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-weight: 600;
+}
+.trip-date-fields input {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid #e5deed;
+  border-radius: 12px;
+  font: inherit;
+}
+.trip-duration-preview {
+  padding: 22px;
+  border-radius: 16px;
+  text-align: center;
+  background: #faf0f6;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.trip-duration-preview strong {
+  color: #b65b85;
+  font-size: 28px;
+}
+.trip-duration-preview small {
+  color: #88869a;
+}
+.trip-date-warning {
+  color: #aa483e;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.crew-invite-action:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+@media(max-width:480px) {
+  .trip-date-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* OurViaggio crew management */
+.crew-remove-button {
+  margin-left: auto;
+  border: 1px solid #efc6d0;
+  background: #fff8fa;
+  color: #b54a69;
+  border-radius: 9px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.crew-remove-button:hover {
+  background: #fde8ef;
+}
+
+.crew-removal-confirm {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid #f0cbd5;
+  background: #fff8fa;
+  border-radius: 14px;
+}
+
+.crew-removal-confirm p {
+  margin: 0 0 8px;
+  font-weight: 600;
+}
+
+.crew-removal-confirm small {
+  color: #8d7280;
+}
+
+.crew-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.crew-confirm-actions button {
+  border: 1px solid #e6d7df;
+  border-radius: 9px;
+  padding: 9px 13px;
+  background: white;
+  cursor: pointer;
+}
+
+.crew-confirm-actions button:last-child {
+  background: #c76a95;
+  border-color: #c76a95;
+  color: white;
+}
+
+.crew-confirm-actions button:disabled {
+  opacity: .5;
+  cursor: wait;
+}

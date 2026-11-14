@@ -1,5 +1,7 @@
 import os, json, secrets, string, time, io, zipfile, uuid
 import httpx
+from dotenv import load_dotenv
+
 from fastapi import FastAPI, HTTPException, Header, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -7,6 +9,7 @@ from sqlalchemy import create_engine, ForeignKey, JSON, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from fastapi.responses import Response
 from pathlib import Path
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 from PIL import Image, UnidentifiedImageError
 
 URL = os.getenv("DATABASE_URL", "sqlite:///./trips.db")
@@ -24,6 +27,7 @@ class Member(Base):
     __tablename__ = "members"
     id: Mapped[int] = mapped_column(primary_key=True); trip_id: Mapped[int] = mapped_column(ForeignKey("trips.id"), index=True)
     name: Mapped[str] = mapped_column(String(40)); token: Mapped[str] = mapped_column(String(40), unique=True)
+    user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 class Activity(Base):
     __tablename__ = "activities"
     id: Mapped[int] = mapped_column(primary_key=True); trip_id: Mapped[int] = mapped_column(ForeignKey("trips.id"), index=True)
@@ -94,7 +98,10 @@ def settle(bal):
     return out
 
 def state(s, t, token):
-    ms = s.scalars(select(Member).where(Member.trip_id == t.id)).all(); me = next((m.id for m in ms if m.token == token), None)
+    ms = s.scalars(select(Member).where(Member.trip_id == t.id)).all()
+    active = [m for m in ms if not m.token.startswith("revoked_")]
+    me = next((m.id for m in active if m.token == token), None)
+    organizer_id = min((m.id for m in ms), default=None)
     polls = []
     for p in s.scalars(select(Poll).where(Poll.trip_id == t.id).order_by(Poll.id.desc())):
         counts, mine = [0] * len(p.options), None
@@ -107,8 +114,11 @@ def state(s, t, token):
     for e in es:
         bal[e.paid_by] = bal.get(e.paid_by, 0) + e.amount
         for k, a in e.shares.items(): bal[int(k)] = bal.get(int(k), 0) - a
-    return {"trip": {"code": t.code, "name": t.name, "dest": t.dest, "start": t.start, "days": t.days}, "me": me,
-            "members": [{"id": m.id, "name": m.name} for m in ms],
+    return {"trip": {"code": t.code, "name": t.name, "dest": t.dest, "start": t.start, "days": t.days}, "me": me, "linked_account": any(m.id == me and m.user_id is not None for m in ms),
+            "members": [{"id": m.id, "name": m.name} for m in active],
+            "former_members": [{"id": m.id, "name": m.name} for m in ms if m not in active],
+            "organizer_id": organizer_id,
+            "is_organizer": me is not None and me == organizer_id,
             "activities": [{"id": a.id, "day": a.day, "time": a.time, "title": a.title, "loc": a.loc, "by": a.by}
                            for a in s.scalars(select(Activity).where(Activity.trip_id == t.id))],
             "polls": polls, "balances": bal, "settle": settle(bal),
@@ -200,9 +210,213 @@ def create_trip(b: NewTrip):
 def join(code: str, b: Join):
     with Session() as s:
         t = trip_of(s, code); m = new_member(s, t, b.name); return {"token": m.token, "id": m.id}
+
+def authenticated_user(authorization: str):
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Please log in")
+
+    token = authorization[7:].strip()
+    url = os.getenv("SUPABASE_URL", "").rstrip("/")
+    key = os.getenv("SUPABASE_PUBLISHABLE_KEY", "")
+
+    if not url or not key:
+        raise HTTPException(503, "Authentication not configured")
+
+    try:
+        response = httpx.get(
+            url + "/auth/v1/user",
+            headers={
+                "apikey": key,
+                "Authorization": "Bearer " + token,
+            },
+            timeout=10,
+        )
+        if response.status_code != 200:
+            raise HTTPException(401, "Invalid or expired login")
+
+        user = response.json()
+        if not user.get("id"):
+            raise HTTPException(401, "Invalid account")
+
+        return user["id"]
+    except httpx.RequestError:
+        raise HTTPException(503, "Authentication service unavailable")
+
+
+@app.post("/api/trips/{code}/claim")
+def link_account_to_trip(
+    code: str,
+    x_token: str = Header(""),
+    authorization: str = Header(""),
+):
+    user_id = authenticated_user(authorization)
+
+    with Session() as s:
+        trip = trip_of(s, code)
+        member = member_of(s, trip, x_token)
+
+        if member.user_id and member.user_id != user_id:
+            raise HTTPException(
+                409, "Membership belongs to another account"
+            )
+
+        existing = s.scalar(
+            select(Member).where(
+                Member.trip_id == trip.id,
+                Member.user_id == user_id
+            )
+        )
+
+        if existing and existing.id != member.id:
+            raise HTTPException(
+                409, "Account already linked to another membership"
+            )
+
+        member.user_id = user_id
+        s.commit()
+
+        return {
+            "ok": True,
+            "member_id": member.id,
+        }
+
+
+@app.get("/api/my-trips")
+def my_trips(authorization: str = Header("")):
+    user_id = authenticated_user(authorization)
+
+    with Session() as s:
+        rows = s.execute(
+            select(Trip, Member)
+            .join(Member, Member.trip_id == Trip.id)
+            .where(Member.user_id == user_id)
+        ).all()
+
+        return [
+            {
+                "code": trip.code,
+                "name": trip.name,
+                "destination": trip.dest,
+                "start": trip.start,
+                "days": trip.days,
+                "member_id": member.id,
+            }
+            for trip, member in rows
+            if not member.token.startswith("revoked_")
+        ]
+
+
+@app.get("/api/trips/{code}/membership")
+def account_trip_membership(
+    code: str,
+    authorization: str = Header("")
+):
+    user_id = authenticated_user(authorization)
+
+    with Session() as s:
+        trip = trip_of(s, code)
+        member = s.scalar(
+            select(Member).where(
+                Member.trip_id == trip.id,
+                Member.user_id == user_id
+            )
+        )
+
+        if not member or member.token.startswith("revoked_"):
+            raise HTTPException(404, "No active membership")
+
+        return {
+            "member_id": member.id,
+            "token": member.token,
+        }
+
 @app.get("/api/trips/{code}")
 def get_trip(code: str, x_token: str = Header("")):
     with Session() as s: return state(s, trip_of(s, code), x_token)
+
+class DatesIn(BaseModel):
+    start: str
+    days: int
+
+@app.patch("/api/trips/{code}/dates")
+def update_trip_dates(code: str, b: DatesIn, x_token: str = Header("")):
+    from datetime import date
+
+    with Session() as s:
+        t = trip_of(s, code)
+        member_of(s, t, x_token)
+
+        try:
+            date.fromisoformat(b.start)
+        except ValueError:
+            raise HTTPException(400, "Invalid start date")
+
+        if not 1 <= b.days <= 30:
+            raise HTTPException(400, "Trip must last 1 to 30 days")
+
+        activities = s.scalars(
+            select(Activity).where(Activity.trip_id == t.id)
+        ).all()
+
+        if any(a.day > b.days for a in activities):
+            raise HTTPException(
+                409,
+                "Move or remove activities beyond the new end date first"
+            )
+
+        t.start = b.start
+        t.days = b.days
+        s.commit()
+        return {"ok": True, "start": t.start, "days": t.days}
+
+
+@app.delete("/api/trips/{code}/members/{member_id}")
+def remove_crew_member(
+    code: str,
+    member_id: int,
+    x_token: str = Header("")
+):
+    with Session() as s:
+        t = trip_of(s, code)
+        actor = member_of(s, t, x_token)
+
+        all_members = s.scalars(
+            select(Member).where(Member.trip_id == t.id)
+        ).all()
+
+        if not all_members:
+            raise HTTPException(404, "No members found")
+
+        organizer_id = min(m.id for m in all_members)
+
+        if actor.id != organizer_id:
+            raise HTTPException(
+                403, "Only the trip organizer can remove members"
+            )
+
+        if member_id == organizer_id:
+            raise HTTPException(
+                403, "The organizer cannot be removed"
+            )
+
+        target = next(
+            (m for m in all_members if m.id == member_id),
+            None
+        )
+
+        if not target:
+            raise HTTPException(404, "Member not found")
+
+        if target.token.startswith("revoked_"):
+            raise HTTPException(409, "Member already removed")
+
+        # Revoke the original access token.
+        # Keep the member record for historical references.
+        target.token = "revoked_" + secrets.token_urlsafe(24)
+        s.commit()
+
+        return {"ok": True, "removed_member_id": member_id}
+
 @app.post("/api/trips/{code}/activities")
 def add_act(code: str, b: ActIn, x_token: str = Header("")):
     with Session() as s:
